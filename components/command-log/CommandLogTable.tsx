@@ -4,9 +4,10 @@ import { useEffect } from "react";
 import { Terminal } from "lucide-react";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { apiClient } from "@/lib/api-client";
 import { useAppStore } from "@/lib/store";
 import type { CommandLogEntry } from "@/lib/types";
-import { cn, unwrapApiData } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 
 const statusBadge: Record<CommandLogEntry["status"], BadgeProps["variant"]> = {
   Pending: "secondary",
@@ -23,32 +24,30 @@ const sourceClass: Record<CommandLogEntry["source"], string> = {
   System: "text-muted-foreground",
 };
 
+/**
+ * Command log is seeded once from server and then treated as append-only on
+ * the client. We deliberately do NOT overwrite the store on subsequent fetches
+ * because that used to clobber optimistic entries the user had just added.
+ */
 export function CommandLogTable() {
-  const { commandLog, setCommandLog } = useAppStore();
+  const commandLog = useAppStore((s) => s.commandLog);
+  const seedCommandLog = useAppStore((s) => s.seedCommandLog);
 
   useEffect(() => {
-    let mounted = true;
-
-    async function fetchCommandLog() {
-      try {
-        const response = await fetch("/api/command-log");
-        if (!response.ok) throw new Error("Command log request failed");
-
-        const payload = await response.json();
-        const data = unwrapApiData<CommandLogEntry[]>(payload);
-
-        if (mounted) setCommandLog(data);
-      } catch (error) {
-        console.error("Failed to fetch command log:", error);
-      }
-    }
-
-    fetchCommandLog();
-
+    let active = true;
+    apiClient
+      .get<CommandLogEntry[]>("/api/command-log")
+      .then((entries) => {
+        if (active) seedCommandLog(entries);
+      })
+      .catch((error) => {
+        // Command log is non-critical; just log. User's local entries remain.
+        console.error("Failed to seed command log:", error);
+      });
     return () => {
-      mounted = false;
+      active = false;
     };
-  }, [setCommandLog]);
+  }, [seedCommandLog]);
 
   return (
     <Card>

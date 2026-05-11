@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
+import { env, simulationSource } from "@/lib/env";
 
 function meta() {
   return {
-    source: process.env.SIMULATION_API_URL ? "external" : "mock",
+    source: simulationSource(),
     generatedAt: new Date().toISOString(),
-    simulationEndpoint: process.env.SIMULATION_API_URL ?? null,
+    simulationEndpoint: env.simulationApiUrl,
   };
 }
 

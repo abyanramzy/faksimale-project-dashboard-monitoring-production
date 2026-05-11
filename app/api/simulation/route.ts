@@ -1,53 +1,50 @@
 import { NextRequest } from "next/server";
-import { mockSimulationBridge } from "@/lib/mock-data";
+import { env } from "@/lib/env";
+import { applySimulationAction, appendCommandLog, readSimulation } from "@/lib/server/state";
 import type { SimulationAction, SimulationBridgeState } from "@/lib/types";
 import { fail, ok } from "../_utils";
 
-function withEndpoint(state: SimulationBridgeState): SimulationBridgeState {
-  const endpoint = process.env.SIMULATION_API_URL ?? state.endpoint;
+export const dynamic = "force-dynamic";
 
+const VALID_ACTIONS: SimulationAction[] = ["start", "pause", "reset"];
+
+function withBridgeMetadata(state: SimulationBridgeState): SimulationBridgeState {
   return {
     ...state,
-    bridge: process.env.SIMULATION_API_URL ? "External API Ready" : "Mock",
-    endpoint,
+    bridge: env.simulationApiUrl ? "External API Ready" : "Mock",
+    endpoint: env.simulationApiUrl ?? state.endpoint,
   };
 }
 
 export async function GET() {
-  return ok(withEndpoint(mockSimulationBridge));
+  return ok(withBridgeMetadata(readSimulation()));
 }
 
 export async function POST(req: NextRequest) {
-  let action: SimulationAction;
+  let body: { action?: SimulationAction };
 
   try {
-    const payload = (await req.json()) as { action?: SimulationAction };
-    action = payload.action as SimulationAction;
+    body = (await req.json()) as { action?: SimulationAction };
   } catch {
     return fail("Payload simulation action tidak valid.", 400);
   }
 
-  if (!["start", "pause", "reset"].includes(action)) {
-    return fail("Action simulation harus start, pause, atau reset.", 422);
+  const action = body.action;
+
+  if (!action || !VALID_ACTIONS.includes(action)) {
+    return fail(`Action simulation harus salah satu dari: ${VALID_ACTIONS.join(", ")}.`, 422);
   }
 
-  const elapsedSeconds = action === "reset" ? 0 : Math.floor(180 + Math.random() * 120);
-  const bottleCount = action === "reset" ? 0 : Math.floor(360 + Math.random() * 180);
-  const status = action === "start" ? "Running" : action === "pause" ? "Paused" : "Resetting";
+  const next = applySimulationAction(action);
 
-  return ok(
-    withEndpoint({
-      ...mockSimulationBridge,
-      status,
-      elapsedSeconds,
-      bottleCount,
-      lastAction: action,
-      message:
-        action === "start"
-          ? "Simulasi mock berjalan. Data ini siap diganti oleh response 3D simulation API."
-          : action === "pause"
-            ? "Simulasi mock dijeda. State terakhir dipertahankan untuk analisis."
-            : "State simulasi mock direset.",
-    })
-  );
+  appendCommandLog({
+    time: new Date().toLocaleTimeString(),
+    source: "User",
+    command: `Simulation ${action}`,
+    validationResult: "OK",
+    status: "Acknowledged",
+    reason: next.message,
+  });
+
+  return ok(withBridgeMetadata(next));
 }

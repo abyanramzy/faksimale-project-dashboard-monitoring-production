@@ -4,34 +4,26 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, Gauge, Wrench, Zap } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { apiClient } from "@/lib/api-client";
 import { mockHardwareAdvisor } from "@/lib/mock-data";
 import type { HardwareAdvisor } from "@/lib/types";
-import { unwrapApiData } from "@/lib/utils";
 
 export function HardwareAdvisorPanel() {
   const [advisor, setAdvisor] = useState<HardwareAdvisor>(mockHardwareAdvisor);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let mounted = true;
-
-    async function fetchHardwareAdvisor() {
-      try {
-        const response = await fetch("/api/hardware");
-        if (!response.ok) throw new Error("Hardware advisor request failed");
-
-        const payload = await response.json();
-        const data = unwrapApiData<HardwareAdvisor>(payload);
-
-        if (mounted) setAdvisor(data);
-      } catch (error) {
-        console.error("Failed to fetch hardware advisor:", error);
-      }
-    }
-
-    fetchHardwareAdvisor();
-
+    let active = true;
+    apiClient
+      .get<HardwareAdvisor>("/api/hardware")
+      .then((data) => {
+        if (active) setAdvisor(data);
+      })
+      .catch((err) => {
+        if (active) setError((err as Error).message);
+      });
     return () => {
-      mounted = false;
+      active = false;
     };
   }, []);
 
@@ -45,6 +37,11 @@ export function HardwareAdvisorPanel() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {error && (
+            <div className="rounded-lg border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-200">
+              {error}
+            </div>
+          )}
           <div className="rounded-lg border border-amber-400/25 bg-amber-400/10 p-4">
             <div className="flex items-center justify-between gap-3">
               <div className="text-lg font-semibold text-amber-200">{advisor.bottleneck}</div>

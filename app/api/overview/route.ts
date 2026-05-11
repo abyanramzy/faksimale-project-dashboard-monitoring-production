@@ -1,18 +1,70 @@
-import { mockProductionOverview } from "@/lib/mock-data";
-import { delay, ok } from "../_utils";
+import { NextRequest } from "next/server";
+import { appendCommandLog, patchOverview, readOverview } from "@/lib/server/state";
+import type { ProductionOverview } from "@/lib/types";
+import { fail, ok } from "../_utils";
+
+export const dynamic = "force-dynamic";
+
+const AI_MODES: ProductionOverview["aiMode"][] = [
+  "Monitor",
+  "Advisor",
+  "Assisted Control",
+  "Closed Loop",
+  "Exploration",
+];
 
 export async function GET() {
-  await delay(180);
+  return ok(readOverview());
+}
 
-  const drift = (Math.random() - 0.45) * 1.8;
-  const actualBpm = Number((mockProductionOverview.actualBpm + drift).toFixed(1));
-  const rejectCount = mockProductionOverview.rejectCount + (actualBpm > 121 ? 1 : 0);
+/**
+ * Partial update of operator-controlled overview fields (targetBpm, aiMode).
+ * Anything else in the payload is ignored to protect live metrics like
+ * actualBpm, totalInput, totalOutput from client writes.
+ */
+export async function POST(req: NextRequest) {
+  let body: Partial<ProductionOverview>;
 
-  return ok({
-    ...mockProductionOverview,
-    actualBpm,
-    rejectCount,
-    totalInput: mockProductionOverview.totalInput + Math.round(actualBpm * 0.2),
-    totalOutput: mockProductionOverview.totalOutput + Math.round(actualBpm * 0.19),
+  try {
+    body = (await req.json()) as Partial<ProductionOverview>;
+  } catch {
+    return fail("Payload overview tidak valid.", 400);
+  }
+
+  const patch: Partial<ProductionOverview> = {};
+
+  if (body.targetBpm !== undefined) {
+    if (typeof body.targetBpm !== "number" || !Number.isFinite(body.targetBpm)) {
+      return fail("targetBpm harus berupa angka.", 422);
+    }
+    if (body.targetBpm < 50 || body.targetBpm > 200) {
+      return fail("targetBpm harus di antara 50 dan 200.", 422);
+    }
+    patch.targetBpm = body.targetBpm;
+  }
+
+  if (body.aiMode !== undefined) {
+    if (!AI_MODES.includes(body.aiMode)) {
+      return fail(`aiMode harus salah satu dari: ${AI_MODES.join(", ")}.`, 422);
+    }
+    patch.aiMode = body.aiMode;
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return fail("Tidak ada field yang valid untuk di-update.", 422);
+  }
+
+  const updated = patchOverview(patch);
+
+  const changed = Object.keys(patch).join(", ");
+  appendCommandLog({
+    time: new Date().toLocaleTimeString(),
+    source: "User",
+    command: `Update overview (${changed})`,
+    validationResult: "OK",
+    status: "Validated",
+    reason: `Target BPM: ${updated.targetBpm}, AI Mode: ${updated.aiMode}`,
   });
+
+  return ok(updated);
 }

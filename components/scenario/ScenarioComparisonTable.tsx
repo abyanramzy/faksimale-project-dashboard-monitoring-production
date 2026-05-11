@@ -3,9 +3,10 @@
 import { useEffect, useState } from "react";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { apiClient } from "@/lib/api-client";
 import { mockScenarios } from "@/lib/mock-data";
 import type { Scenario } from "@/lib/types";
-import { clamp, unwrapApiData } from "@/lib/utils";
+import { clamp } from "@/lib/utils";
 
 const statusBadge: Record<Scenario["status"], BadgeProps["variant"]> = {
   Stable: "success",
@@ -15,28 +16,20 @@ const statusBadge: Record<Scenario["status"], BadgeProps["variant"]> = {
 
 export function ScenarioComparisonTable() {
   const [scenarios, setScenarios] = useState<Scenario[]>(mockScenarios);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let mounted = true;
-
-    async function fetchScenarios() {
-      try {
-        const response = await fetch("/api/scenarios");
-        if (!response.ok) throw new Error("Scenario request failed");
-
-        const payload = await response.json();
-        const data = unwrapApiData<Scenario[]>(payload);
-
-        if (mounted) setScenarios(data);
-      } catch (error) {
-        console.error("Failed to fetch scenarios:", error);
-      }
-    }
-
-    fetchScenarios();
-
+    let active = true;
+    apiClient
+      .get<Scenario[]>("/api/scenarios")
+      .then((data) => {
+        if (active) setScenarios(data);
+      })
+      .catch((err) => {
+        if (active) setError((err as Error).message);
+      });
     return () => {
-      mounted = false;
+      active = false;
     };
   }, []);
 
@@ -49,6 +42,11 @@ export function ScenarioComparisonTable() {
         </p>
       </CardHeader>
       <CardContent>
+        {error && (
+          <div className="mb-4 rounded-lg border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-200">
+            Gagal memuat scenarios: {error}
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full min-w-[920px] text-left text-sm">
             <thead className="border-b border-border text-muted-foreground">

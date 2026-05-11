@@ -12,6 +12,7 @@ import {
   Zap,
 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ToastStack } from "@/components/ui/toast";
 import { OverviewPanel } from "@/components/dashboard/OverviewPanel";
 import { LineMonitor } from "@/components/line-monitor/LineMonitor";
 import { AIAgentPanel } from "@/components/ai-agent/AIAgentPanel";
@@ -134,6 +135,7 @@ export default function Home() {
           </TabsContent>
         </Tabs>
       </div>
+      <ToastStack />
     </main>
   );
 }

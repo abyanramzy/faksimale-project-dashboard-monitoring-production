@@ -1,16 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Activity, ArrowRight, Gauge, GitBranch } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAppStore } from "@/lib/store";
-import type { Lane } from "@/lib/types";
-import { unwrapApiData } from "@/lib/utils";
 import { LaneCard } from "./LaneCard";
 
+/**
+ * Display-only panel. OverviewPanel owns the /api/tick polling and writes
+ * lanes + overview into the shared store. We just read from it here so the
+ * two views are guaranteed to show the same snapshot.
+ */
 export function LineMonitor() {
-  const { lanes, overview, updateLanes } = useAppStore();
-  const [lastUpdated, setLastUpdated] = useState("initial mock");
+  const { lanes, overview, hydrated } = useAppStore();
 
   const laneStats = useMemo(() => {
     const totalLaneBpm = lanes.reduce((sum, lane) => sum + lane.bpm, 0);
@@ -19,34 +21,6 @@ export function LineMonitor() {
 
     return { totalLaneBpm, maxUtil, warningCount };
   }, [lanes]);
-
-  useEffect(() => {
-    let mounted = true;
-
-    async function fetchLanes() {
-      try {
-        const response = await fetch("/api/lanes");
-        if (!response.ok) throw new Error("Lane request failed");
-
-        const payload = await response.json();
-        const data = unwrapApiData<Lane[]>(payload);
-
-        if (!mounted) return;
-        updateLanes(data);
-        setLastUpdated(new Date().toLocaleTimeString());
-      } catch (error) {
-        console.error("Failed to fetch lanes:", error);
-      }
-    }
-
-    fetchLanes();
-    const interval = setInterval(fetchLanes, 3000);
-
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
-  }, [updateLanes]);
 
   if (lanes.length === 0) {
     return (
@@ -69,7 +43,7 @@ export function LineMonitor() {
             </p>
           </div>
           <div className="rounded-md border border-border/70 bg-background/50 px-3 py-2 text-xs text-muted-foreground">
-            Updated {lastUpdated}
+            {hydrated ? "Live data" : "Initial mock"}
           </div>
         </CardHeader>
         <CardContent>

@@ -123,7 +123,7 @@ export const mockAlarms: AlarmEntry[] = [
 export const mockCommandLog: CommandLogEntry[] = [
   {
     id: "cmd-001",
-    time: new Date(Date.now() - 60 * 1000).toLocaleTimeString(),
+    time: "boot +00:00",
     source: "System",
     command: "Simulation started - Target 120 BPM, Round Robin",
     validationResult: "OK - dalam batas safety boundary",
@@ -132,7 +132,7 @@ export const mockCommandLog: CommandLogEntry[] = [
   },
   {
     id: "cmd-002",
-    time: new Date(Date.now() - 45 * 1000).toLocaleTimeString(),
+    time: "boot +00:15",
     source: "AI Agent",
     command: "Analyze production state",
     validationResult: "OK",
@@ -141,7 +141,7 @@ export const mockCommandLog: CommandLogEntry[] = [
   },
   {
     id: "cmd-003",
-    time: new Date(Date.now() - 30 * 1000).toLocaleTimeString(),
+    time: "boot +00:30",
     source: "User",
     command: "Run Scenario: 135 BPM Stress Test",
     validationResult: "WARNING - servo load melebihi threshold 80%",
@@ -150,7 +150,7 @@ export const mockCommandLog: CommandLogEntry[] = [
   },
   {
     id: "cmd-004",
-    time: new Date(Date.now() - 15 * 1000).toLocaleTimeString(),
+    time: "boot +00:45",
     source: "AI Agent",
     command: "Rollback - Target BPM dikembalikan ke 120",
     validationResult: "OK - rollback condition terpenuhi (jam > 2x)",

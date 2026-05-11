@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import type { AIRecommendation, Lane } from "@/lib/types";
+import { aiAnalyzeThresholds } from "@/lib/thresholds";
 import { delay, fail, ok } from "../../_utils";
 
 interface AnalyzePayload {
@@ -15,9 +16,7 @@ function toNumber(value: unknown) {
 }
 
 function normalizePayload(payload: unknown): AnalyzePayload | null {
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
+  if (!payload || typeof payload !== "object") return null;
 
   const source = payload as Record<string, unknown>;
   const actualBpm = toNumber(source.actualBpm);
@@ -42,17 +41,9 @@ function normalizePayload(payload: unknown): AnalyzePayload | null {
     return typeof candidate.name === "string" && typeof candidate.utilization === "number";
   });
 
-  if (lanes.length === 0) {
-    return null;
-  }
+  if (lanes.length === 0) return null;
 
-  return {
-    actualBpm,
-    targetBpm,
-    jamCount,
-    rejectCount,
-    lanes,
-  };
+  return { actualBpm, targetBpm, jamCount, rejectCount, lanes };
 }
 
 export async function POST(req: NextRequest) {
@@ -67,8 +58,20 @@ export async function POST(req: NextRequest) {
   const input = normalizePayload(payload);
 
   if (!input) {
-    return fail("Payload analisis AI harus berisi actualBpm, targetBpm, jamCount, rejectCount, dan lanes.", 422);
+    return fail(
+      "Payload analisis AI harus berisi actualBpm, targetBpm, jamCount, rejectCount, dan lanes.",
+      422
+    );
   }
+
+  const {
+    highUtilization,
+    safeAvgUtilization,
+    jamThreshold,
+    rejectHold,
+    bpmStep,
+    minTargetBpm,
+  } = aiAnalyzeThresholds;
 
   const avgUtil =
     input.lanes.reduce((sum, lane) => sum + lane.utilization, 0) / input.lanes.length;
@@ -81,8 +84,12 @@ export async function POST(req: NextRequest) {
 
   let recommendation: AIRecommendation;
 
-  if (warnLanes > 0 || input.jamCount > 1 || highestUtilLane.utilization >= 92) {
-    const recBpm = Math.max(80, input.targetBpm - 5);
+  if (
+    warnLanes > 0 ||
+    input.jamCount > jamThreshold ||
+    highestUtilLane.utilization >= highUtilization
+  ) {
+    const recBpm = Math.max(minTargetBpm, input.targetBpm - bpmStep);
 
     recommendation = {
       decision: "Reduce Load & Rebalance",
@@ -93,8 +100,12 @@ export async function POST(req: NextRequest) {
       confidence: 0.78,
       recBpm,
     };
-  } else if (input.actualBpm > input.targetBpm - 2 && input.rejectCount < 20 && avgUtil < 88) {
-    const recBpm = input.targetBpm + 5;
+  } else if (
+    input.actualBpm > input.targetBpm - 2 &&
+    input.rejectCount < rejectHold &&
+    avgUtil < safeAvgUtilization
+  ) {
+    const recBpm = input.targetBpm + bpmStep;
 
     recommendation = {
       decision: "Optimize - Increase Target",
@@ -116,6 +127,6 @@ export async function POST(req: NextRequest) {
     };
   }
 
-  await delay(900);
+  await delay(400);
   return ok(recommendation);
 }

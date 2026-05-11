@@ -7,9 +7,9 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { apiClient } from "@/lib/api-client";
 import { useAppStore } from "@/lib/store";
 import type { AIRecommendation, ProductionOverview } from "@/lib/types";
-import { unwrapApiData } from "@/lib/utils";
 
 const aiModes: ProductionOverview["aiMode"][] = [
   "Monitor",
@@ -27,8 +27,9 @@ export function AIAgentPanel() {
     pendingRecommendation,
     setPendingRecommendation,
     addCommandLog,
-    updateOverview,
+    patchOverview,
     setPreviousTargetBpm,
+    pushToast,
   } = useAppStore();
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
@@ -36,27 +37,32 @@ export function AIAgentPanel() {
   const canApplyRecommendation =
     safetySettings.aiWritePermission !== "Disabled" && Boolean(pendingRecommendation?.recBpm);
 
+  // Persist a target/mode change to the server. Optimistic update via
+  // patchOverview keeps the UI responsive; /api/tick will reconcile.
+  async function persistOverviewPatch(patch: Partial<ProductionOverview>) {
+    patchOverview(patch);
+    try {
+      await apiClient.post<ProductionOverview>("/api/overview", patch);
+    } catch (error) {
+      pushToast({
+        kind: "error",
+        message: `Gagal menyimpan perubahan overview: ${(error as Error).message}`,
+      });
+    }
+  }
+
   const handleAnalyze = async () => {
     setIsAnalyzing(true);
     setAnalysisError(null);
 
     try {
-      const response = await fetch("/api/ai/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          actualBpm: overview.actualBpm,
-          targetBpm: overview.targetBpm,
-          jamCount: overview.jamCount,
-          rejectCount: overview.rejectCount,
-          lanes,
-        }),
+      const recommendation = await apiClient.post<AIRecommendation>("/api/ai/analyze", {
+        actualBpm: overview.actualBpm,
+        targetBpm: overview.targetBpm,
+        jamCount: overview.jamCount,
+        rejectCount: overview.rejectCount,
+        lanes,
       });
-
-      if (!response.ok) throw new Error("AI analysis request failed");
-
-      const payload = await response.json();
-      const recommendation = unwrapApiData<AIRecommendation>(payload);
 
       setPendingRecommendation(recommendation);
       addCommandLog({
@@ -69,26 +75,31 @@ export function AIAgentPanel() {
       });
     } catch (error) {
       console.error("Failed to analyze production state:", error);
-      setAnalysisError("Analisis gagal. Periksa API route atau payload produksi.");
+      setAnalysisError(`Analisis gagal: ${(error as Error).message}`);
     } finally {
       setIsAnalyzing(false);
     }
   };
 
-  const handleApprove = () => {
+  const handleApprove = async () => {
     if (!pendingRecommendation?.recBpm) return;
 
     setPreviousTargetBpm(overview.targetBpm);
-    updateOverview({ targetBpm: pendingRecommendation.recBpm });
+    const step = Math.abs(pendingRecommendation.recBpm - overview.targetBpm);
     addCommandLog({
       time: new Date().toLocaleTimeString(),
       source: "User",
       command: `Apply AI Recommendation - Target BPM: ${pendingRecommendation.recBpm}`,
-      validationResult: `OK - step: ${Math.abs(pendingRecommendation.recBpm - overview.targetBpm)} BPM`,
+      validationResult: `OK - step: ${step} BPM`,
       status: "Validated",
       reason: `Operator menyetujui rekomendasi AI: ${pendingRecommendation.decision}`,
     });
+    await persistOverviewPatch({ targetBpm: pendingRecommendation.recBpm });
     setPendingRecommendation(null);
+    pushToast({
+      kind: "success",
+      message: `Target BPM di-update ke ${pendingRecommendation.recBpm}.`,
+    });
   };
 
   const handleReject = () => {
@@ -103,25 +114,24 @@ export function AIAgentPanel() {
     setPendingRecommendation(null);
   };
 
-  const handleRollback = () => {
+  const handleRollback = async () => {
     const previous = useAppStore.getState().previousTargetBpm;
+    if (previous === null) return;
 
-    if (previous !== null) {
-      updateOverview({ targetBpm: previous });
-      addCommandLog({
-        time: new Date().toLocaleTimeString(),
-        source: "User",
-        command: `Rollback - Target BPM dikembalikan ke ${previous}`,
-        validationResult: "OK",
-        status: "Rolled Back",
-        reason: "Operator melakukan manual rollback",
-      });
-      setPreviousTargetBpm(null);
-    }
+    addCommandLog({
+      time: new Date().toLocaleTimeString(),
+      source: "User",
+      command: `Rollback - Target BPM dikembalikan ke ${previous}`,
+      validationResult: "OK",
+      status: "Rolled Back",
+      reason: "Operator melakukan manual rollback",
+    });
+    await persistOverviewPatch({ targetBpm: previous });
+    setPreviousTargetBpm(null);
+    pushToast({ kind: "info", message: `Rollback ke ${previous} BPM.` });
   };
 
-  const handleDisable = () => {
-    updateOverview({ aiMode: "Monitor" });
+  const handleDisable = async () => {
     addCommandLog({
       time: new Date().toLocaleTimeString(),
       source: "User",
@@ -130,10 +140,11 @@ export function AIAgentPanel() {
       status: "Acknowledged",
       reason: "AI control dinonaktifkan oleh operator",
     });
+    await persistOverviewPatch({ aiMode: "Monitor" });
+    setPendingRecommendation(null);
   };
 
-  const setAIMode = (mode: ProductionOverview["aiMode"]) => {
-    updateOverview({ aiMode: mode });
+  const setAIMode = async (mode: ProductionOverview["aiMode"]) => {
     addCommandLog({
       time: new Date().toLocaleTimeString(),
       source: "User",
@@ -142,6 +153,9 @@ export function AIAgentPanel() {
       status: "Acknowledged",
       reason: "Manual mode change",
     });
+    await persistOverviewPatch({ aiMode: mode });
+    // Monitor mode cannot act on recommendations; clear stale ones.
+    if (mode === "Monitor") setPendingRecommendation(null);
   };
 
   return (
@@ -155,7 +169,7 @@ export function AIAgentPanel() {
             </CardTitle>
             <Badge variant="secondary">{safetySettings.aiWritePermission}</Badge>
           </div>
-          <Tabs value={overview.aiMode} onValueChange={(value) => setAIMode(value as ProductionOverview["aiMode"])}>
+          <Tabs value={overview.aiMode} onValueChange={(value: string) => setAIMode(value as ProductionOverview["aiMode"])}>
             <TabsList className="mt-4 grid h-auto w-full grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
               {aiModes.map((mode) => (
                 <TabsTrigger key={mode} value={mode} className="h-9 justify-start">

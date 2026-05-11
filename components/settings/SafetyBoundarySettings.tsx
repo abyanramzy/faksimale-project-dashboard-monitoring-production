@@ -5,9 +5,10 @@ import { Save, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { apiClient } from "@/lib/api-client";
 import { useAppStore } from "@/lib/store";
 import type { SafetySettings } from "@/lib/types";
-import { cn, unwrapApiData } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 
 const numericFields: Array<{
   key: keyof Omit<SafetySettings, "aiWritePermission">;
@@ -30,74 +31,49 @@ const permissions: SafetySettings["aiWritePermission"][] = [
 ];
 
 export function SafetyBoundarySettings() {
-  const { safetySettings, updateSafetySettings, addCommandLog } = useAppStore();
+  const { safetySettings, setSafetySettings, pushToast } = useAppStore();
   const [draft, setDraft] = useState<SafetySettings>(safetySettings);
   const [isSaving, setIsSaving] = useState(false);
 
+  // Fetch once on mount. After that, the server is the source of truth and
+  // we only re-read after a successful save.
   useEffect(() => {
-    let mounted = true;
-
-    async function fetchSafetySettings() {
-      try {
-        const response = await fetch("/api/safety");
-        if (!response.ok) throw new Error("Safety request failed");
-
-        const payload = await response.json();
-        const data = unwrapApiData<SafetySettings>(payload);
-
-        if (!mounted) return;
+    let active = true;
+    apiClient
+      .get<SafetySettings>("/api/safety")
+      .then((data) => {
+        if (!active) return;
+        setSafetySettings(data);
         setDraft(data);
-        updateSafetySettings(data);
-      } catch (error) {
-        console.error("Failed to fetch safety settings:", error);
-      }
-    }
-
-    fetchSafetySettings();
-
+      })
+      .catch((error) => {
+        if (active) pushToast({ kind: "error", message: `Gagal memuat safety: ${error.message}` });
+      });
     return () => {
-      mounted = false;
+      active = false;
     };
-  }, [updateSafetySettings]);
+  }, [setSafetySettings, pushToast]);
 
-  const updateNumber = (key: keyof Omit<SafetySettings, "aiWritePermission">, value: string) => {
-    setDraft((current) => ({
-      ...current,
-      [key]: Number(value),
-    }));
+  const updateNumber = (
+    key: keyof Omit<SafetySettings, "aiWritePermission">,
+    value: string
+  ) => {
+    setDraft((current) => ({ ...current, [key]: Number(value) }));
   };
 
-  const saveSettings = async () => {
+  async function saveSettings() {
     setIsSaving(true);
-
     try {
-      const response = await fetch("/api/safety", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(draft),
-      });
-
-      if (!response.ok) throw new Error("Safety save failed");
-
-      const payload = await response.json();
-      const data = unwrapApiData<SafetySettings>(payload);
-
-      updateSafetySettings(data);
-      setDraft(data);
-      addCommandLog({
-        time: new Date().toLocaleTimeString(),
-        source: "User",
-        command: "Update Safety Boundary",
-        validationResult: "OK",
-        status: "Validated",
-        reason: `AI write permission: ${data.aiWritePermission}`,
-      });
+      const saved = await apiClient.post<SafetySettings>("/api/safety", draft);
+      setSafetySettings(saved);
+      setDraft(saved);
+      pushToast({ kind: "success", message: "Safety boundary tersimpan." });
     } catch (error) {
-      console.error("Failed to save safety settings:", error);
+      pushToast({ kind: "error", message: `Gagal menyimpan: ${(error as Error).message}` });
     } finally {
       setIsSaving(false);
     }
-  };
+  }
 
   return (
     <Card>
@@ -142,7 +118,7 @@ export function SafetyBoundarySettings() {
           <div className="control-label">AI Write Permission</div>
           <select
             value={draft.aiWritePermission}
-            onChange={(event) =>
+            onChange={(event: { target: { value: string } }) =>
               setDraft((current) => ({
                 ...current,
                 aiWritePermission: event.target.value as SafetySettings["aiWritePermission"],

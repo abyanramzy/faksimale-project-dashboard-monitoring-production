@@ -103,3 +103,11 @@ export interface ApiEnvelope<T> {
     simulationEndpoint: string | null;
   };
 }
+
+/** Consolidated snapshot returned by GET /api/tick. */
+export interface DashboardSnapshot {
+  overview: ProductionOverview;
+  lanes: Lane[];
+  alarms: AlarmEntry[];
+  serverTime: string;
+}

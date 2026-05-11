@@ -5,72 +5,46 @@ import { Activity, Pause, Play, RefreshCcw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useTick } from "@/hooks/useTick";
+import { apiClient } from "@/lib/api-client";
 import { useAppStore } from "@/lib/store";
+import { pollingIntervals } from "@/lib/thresholds";
 import type { SimulationAction, SimulationBridgeState } from "@/lib/types";
-import { unwrapApiData } from "@/lib/utils";
 
+/**
+ * Polls /api/simulation at tickMs cadence. Because the server-side
+ * applySimulationAction() and readSimulation() both advance elapsed/bottles
+ * from a wall-clock delta, those counters now grow even without client POSTs.
+ */
 export function SimulationControl() {
-  const { simRunning, simElapsed, simBottles, setSimulationState, addCommandLog } = useAppStore();
-  const [bridge, setBridge] = useState<SimulationBridgeState | null>(null);
+  const { setSimulationState, pushToast } = useAppStore();
+  const simRunning = useAppStore((s) => s.simRunning);
+  const simElapsed = useAppStore((s) => s.simElapsed);
+  const simBottles = useAppStore((s) => s.simBottles);
   const [isSending, setIsSending] = useState(false);
 
+  const { data: bridge, error } = useTick<SimulationBridgeState>(
+    "/api/simulation",
+    pollingIntervals.tickMs
+  );
+
   useEffect(() => {
-    let mounted = true;
+    if (!bridge) return;
+    setSimulationState(bridge.status === "Running", bridge.elapsedSeconds, bridge.bottleCount);
+  }, [bridge, setSimulationState]);
 
-    async function fetchBridge() {
-      try {
-        const response = await fetch("/api/simulation");
-        if (!response.ok) throw new Error("Simulation bridge request failed");
-
-        const payload = await response.json();
-        const data = unwrapApiData<SimulationBridgeState>(payload);
-
-        if (!mounted) return;
-        setBridge(data);
-        setSimulationState(data.status === "Running", data.elapsedSeconds, data.bottleCount);
-      } catch (error) {
-        console.error("Failed to fetch simulation bridge:", error);
-      }
-    }
-
-    fetchBridge();
-
-    return () => {
-      mounted = false;
-    };
-  }, [setSimulationState]);
-
-  const sendAction = async (action: SimulationAction) => {
+  async function sendAction(action: SimulationAction) {
     setIsSending(true);
-
     try {
-      const response = await fetch("/api/simulation", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      });
-
-      if (!response.ok) throw new Error("Simulation action failed");
-
-      const payload = await response.json();
-      const data = unwrapApiData<SimulationBridgeState>(payload);
-
-      setBridge(data);
-      setSimulationState(data.status === "Running", data.elapsedSeconds, data.bottleCount);
-      addCommandLog({
-        time: new Date().toLocaleTimeString(),
-        source: "User",
-        command: `Simulation ${action}`,
-        validationResult: "OK",
-        status: "Acknowledged",
-        reason: data.message,
-      });
-    } catch (error) {
-      console.error("Failed to send simulation action:", error);
+      const next = await apiClient.post<SimulationBridgeState>("/api/simulation", { action });
+      setSimulationState(next.status === "Running", next.elapsedSeconds, next.bottleCount);
+      pushToast({ kind: "info", message: next.message });
+    } catch (err) {
+      pushToast({ kind: "error", message: `Simulation ${action} gagal: ${(err as Error).message}` });
     } finally {
       setIsSending(false);
     }
-  };
+  }
 
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -80,7 +54,7 @@ export function SimulationControl() {
             <div>
               <CardTitle>Simulation Bridge</CardTitle>
               <p className="mt-1 text-sm text-muted-foreground">
-                Adapter awal untuk REST API 3D simulation. Saat ini berjalan dengan mock endpoint lokal.
+                Adapter awal untuk REST API 3D simulation. Set SIMULATION_API_URL untuk melewati mock.
               </p>
             </div>
             <Badge variant={bridge?.bridge === "External API Ready" ? "success" : "secondary"}>
@@ -89,6 +63,11 @@ export function SimulationControl() {
           </div>
         </CardHeader>
         <CardContent className="space-y-5">
+          {error && (
+            <div className="rounded-lg border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-200">
+              Simulation bridge error: {error.message}
+            </div>
+          )}
           <div className="grid gap-4 md:grid-cols-3">
             <div className="rounded-lg border border-border/70 bg-background/45 p-4">
               <div className="control-label">Status</div>
@@ -129,11 +108,15 @@ export function SimulationControl() {
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <Button onClick={() => sendAction("start")} disabled={isSending}>
+            <Button onClick={() => sendAction("start")} disabled={isSending || simRunning}>
               <Play className="mr-2 h-4 w-4" />
               Start
             </Button>
-            <Button variant="secondary" onClick={() => sendAction("pause")} disabled={isSending}>
+            <Button
+              variant="secondary"
+              onClick={() => sendAction("pause")}
+              disabled={isSending || !simRunning}
+            >
               <Pause className="mr-2 h-4 w-4" />
               Pause
             </Button>
@@ -155,15 +138,17 @@ export function SimulationControl() {
         <CardContent className="space-y-3 text-sm text-muted-foreground">
           <div className="rounded-lg border border-border/70 bg-background/45 p-3">
             <div className="control-label">Input</div>
-            <p className="mt-2">action: start | pause | reset</p>
+            <p className="mt-2 font-mono text-xs">POST {"{"} action: &quot;start&quot; | &quot;pause&quot; | &quot;reset&quot; {"}"}</p>
           </div>
           <div className="rounded-lg border border-border/70 bg-background/45 p-3">
             <div className="control-label">Output</div>
-            <p className="mt-2">status, elapsedSeconds, bottleCount, lastAction, message</p>
+            <p className="mt-2 font-mono text-xs">
+              {"{"} status, elapsedSeconds, bottleCount, lastAction, message {"}"}
+            </p>
           </div>
           <div className="rounded-lg border border-border/70 bg-background/45 p-3">
             <div className="control-label">Next Step</div>
-            <p className="mt-2">Ganti mock route dengan request ke simulation engine melalui API bridge.</p>
+            <p className="mt-2">Lihat docs/API_CONTRACT.md untuk mapping ke simulation engine.</p>
           </div>
         </CardContent>
       </Card>

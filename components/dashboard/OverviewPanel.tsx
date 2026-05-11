@@ -23,10 +23,11 @@ import {
   YAxis,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useTick } from "@/hooks/useTick";
 import { useAppStore } from "@/lib/store";
-import type { ProductionOverview } from "@/lib/types";
+import { overviewThresholds, pollingIntervals, trendChart } from "@/lib/thresholds";
+import type { DashboardSnapshot } from "@/lib/types";
 import { MetricCard } from "./MetricCard";
-import { unwrapApiData } from "@/lib/utils";
 
 interface TrendPoint {
   time: string;
@@ -35,19 +36,41 @@ interface TrendPoint {
 }
 
 function createInitialHistory(targetBpm: number, actualBpm: number): TrendPoint[] {
-  return Array.from({ length: 20 }, (_, index) => ({
-    time: `${19 - index}m`,
+  return Array.from({ length: trendChart.historySize }, (_, index) => ({
+    time: `${trendChart.historySize - 1 - index}m`,
     target: targetBpm,
     actual: Number((actualBpm + (Math.random() - 0.5) * 2.4).toFixed(1)),
   }));
 }
 
 export function OverviewPanel() {
-  const { overview, lanes, alarms, updateOverview } = useAppStore();
-  const [historyData, setHistoryData] = useState<TrendPoint[]>(() =>
+  const { overview, lanes, alarms, setOverview, setLanes, setAlarms, setHydrated } = useAppStore();
+  const [history, setHistory] = useState<TrendPoint[]>(() =>
     createInitialHistory(overview.targetBpm, overview.actualBpm)
   );
-  const [lastUpdated, setLastUpdated] = useState("initial mock");
+
+  const { data: snapshot, error, lastUpdated } = useTick<DashboardSnapshot>(
+    "/api/tick",
+    pollingIntervals.tickMs
+  );
+
+  // Reconcile server snapshot into the client store. Single source of truth
+  // for overview/lanes/alarms live data.
+  useEffect(() => {
+    if (!snapshot) return;
+    setOverview(snapshot.overview);
+    setLanes(snapshot.lanes);
+    setAlarms(snapshot.alarms);
+    setHydrated();
+    setHistory((previous) => [
+      ...previous.slice(1),
+      {
+        time: "now",
+        target: snapshot.overview.targetBpm,
+        actual: snapshot.overview.actualBpm,
+      },
+    ]);
+  }, [snapshot, setOverview, setLanes, setAlarms, setHydrated]);
 
   const calculated = useMemo(() => {
     const yieldRate =
@@ -59,13 +82,19 @@ export function OverviewPanel() {
         ? lanes.reduce((sum, lane) => sum + lane.utilization, 0) / lanes.length
         : 0;
 
-    return {
-      yieldRate,
-      bpmDelta,
-      activeAlarms,
-      averageUtilization,
-    };
+    return { yieldRate, bpmDelta, activeAlarms, averageUtilization };
   }, [alarms, lanes, overview]);
+
+  // Dynamic Y-axis: pad around min/max so the line doesn't clip.
+  const yDomain = useMemo<[number, number]>(() => {
+    const values = history.flatMap((p) => [p.actual, p.target]);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    return [
+      Math.floor(min - trendChart.axisPadding),
+      Math.ceil(max + trendChart.axisPadding),
+    ];
+  }, [history]);
 
   const overviewMetrics = [
     {
@@ -80,14 +109,20 @@ export function OverviewPanel() {
       value: overview.actualBpm.toFixed(1),
       icon: <Activity className="h-4 w-4" />,
       sub: `Delta ${calculated.bpmDelta >= 0 ? "+" : ""}${calculated.bpmDelta.toFixed(1)} BPM`,
-      tone: Math.abs(calculated.bpmDelta) <= 2 ? ("good" as const) : ("warn" as const),
+      tone:
+        Math.abs(calculated.bpmDelta) <= overviewThresholds.bpmDeltaOk
+          ? ("good" as const)
+          : ("warn" as const),
     },
     {
       label: "Yield",
       value: `${calculated.yieldRate.toFixed(2)}%`,
       icon: <Gauge className="h-4 w-4" />,
       sub: `${overview.rejectCount} reject dari ${overview.totalInput.toLocaleString()} input`,
-      tone: calculated.yieldRate >= 99.5 ? ("good" as const) : ("warn" as const),
+      tone:
+        calculated.yieldRate >= overviewThresholds.yieldGood
+          ? ("good" as const)
+          : ("warn" as const),
     },
     {
       label: "Best Stable",
@@ -107,14 +142,20 @@ export function OverviewPanel() {
       value: overview.jamCount,
       icon: <AlertCircle className="h-4 w-4" />,
       sub: `${calculated.activeAlarms} alarm aktif`,
-      tone: overview.jamCount > 2 ? ("danger" as const) : ("warn" as const),
+      tone:
+        overview.jamCount > overviewThresholds.jamWarn
+          ? ("danger" as const)
+          : ("warn" as const),
     },
     {
       label: "Downtime",
       value: `${overview.downtimeMinutes}m`,
       icon: <Clock className="h-4 w-4" />,
       sub: "Shift berjalan",
-      tone: overview.downtimeMinutes <= 5 ? ("good" as const) : ("warn" as const),
+      tone:
+        overview.downtimeMinutes <= overviewThresholds.downtimeGoodMinutes
+          ? ("good" as const)
+          : ("warn" as const),
     },
     {
       label: "AI Mode",
@@ -125,44 +166,16 @@ export function OverviewPanel() {
     },
   ];
 
-  useEffect(() => {
-    let mounted = true;
-
-    async function fetchOverview() {
-      try {
-        const response = await fetch("/api/overview");
-        if (!response.ok) throw new Error("Overview request failed");
-
-        const payload = await response.json();
-        const data = unwrapApiData<ProductionOverview>(payload);
-
-        if (!mounted) return;
-        updateOverview(data);
-        setLastUpdated(new Date().toLocaleTimeString());
-        setHistoryData((previous) => [
-          ...previous.slice(1),
-          {
-            time: "now",
-            target: data.targetBpm,
-            actual: data.actualBpm,
-          },
-        ]);
-      } catch (error) {
-        console.error("Failed to fetch overview:", error);
-      }
-    }
-
-    fetchOverview();
-    const interval = setInterval(fetchOverview, 5000);
-
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
-  }, [updateOverview]);
+  const updatedLabel = lastUpdated ? lastUpdated.toLocaleTimeString() : "initial mock";
 
   return (
     <div className="space-y-5">
+      {error && (
+        <div className="rounded-lg border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-200">
+          Gagal memuat snapshot: {error.message}. Menampilkan data terakhir yang tersedia.
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {overviewMetrics.map((metric) => (
           <MetricCard
@@ -181,18 +194,20 @@ export function OverviewPanel() {
           <CardHeader className="flex-row items-center justify-between gap-3">
             <div>
               <CardTitle>BPM Trend</CardTitle>
-              <p className="mt-1 text-sm text-muted-foreground">Target vs actual, 20 interval terakhir</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Target vs actual, {trendChart.historySize} interval terakhir
+              </p>
             </div>
             <div className="rounded-md border border-border/70 bg-background/50 px-3 py-2 text-xs text-muted-foreground">
-              Updated {lastUpdated}
+              Updated {updatedLabel}
             </div>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={320}>
-              <LineChart data={historyData} margin={{ left: 8, right: 18, top: 8, bottom: 8 }}>
+              <LineChart data={history} margin={{ left: 8, right: 18, top: 8, bottom: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                 <XAxis dataKey="time" stroke="hsl(var(--muted-foreground))" tickLine={false} />
-                <YAxis domain={[100, 140]} stroke="hsl(var(--muted-foreground))" tickLine={false} />
+                <YAxis domain={yDomain} stroke="hsl(var(--muted-foreground))" tickLine={false} />
                 <Tooltip
                   contentStyle={{
                     backgroundColor: "hsl(var(--card))",

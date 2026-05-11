@@ -1,6 +1,8 @@
-import { mockHardwareAdvisor } from "@/lib/mock-data";
+import { readHardwareAdvisor } from "@/lib/server/state";
 import { ok } from "../_utils";
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
-  return ok(mockHardwareAdvisor);
+  return ok(readHardwareAdvisor());
 }
